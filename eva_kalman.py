@@ -38,11 +38,11 @@ class FlexToFListener(Node):
         # Kalman Filter Initialization
         self.state = np.zeros(2)  # [x-position, y-position]
         self.P = np.eye(2)  # Initial error covariance
-        self.Q = np.eye(2) * 1e-4  # Process noise covariance
-        self.R = np.eye(4) * 0.05  # Measurement noise covariance
+        self.Q = np.eye(2) * 1e-4  # Process noise covariance CHANGE THIS TO OPTIMIZE?
+        self.R = np.eye(4) * 0.05  # Measurement noise covariance CHANGE THIS TO OPTIMIZE?
         self.H = np.zeros((4, 2))  # Measurement matrix
-        self.H[0, 1] = 1  # Whisker 1 influences y-position
-        self.H[1, 0] = 1  # Whisker 2 influences x-position
+        self.H[0, 1] = 1  # Whisker 1 influences y-position (positive)
+        self.H[1, 0] = 1  # Whisker 2 influences x-position (positive)
         self.H[2, 1] = -1 # Whisker 3 influences y-position (negative)
         self.H[3, 0] = -1 # Whisker 4 influences x-position (negative)
 
@@ -60,16 +60,16 @@ class FlexToFListener(Node):
         apple_position_x = self.state[0]
         apple_position_y = self.state[1]
 
-        if apple_position_y > 0.75:
+        if apple_position_y > 1.0:
             vertical_position = "Up"
-        elif apple_position_y < -0.75:
+        elif apple_position_y < -1.0:
             vertical_position = "Down"
         else:
             vertical_position = ""
 
-        if apple_position_x > 0.75:
+        if apple_position_x > 1.0:
             horizontal_position = "Right"
-        elif apple_position_x < -0.75:
+        elif apple_position_x < -1.0:
             horizontal_position = "Left"
         else:
             horizontal_position = ""
@@ -78,6 +78,7 @@ class FlexToFListener(Node):
 
     def tof_callback(self, msg: Int32):
         # print(f"[ToF Sensor Data] Distance: {msg.data} mm")
+        # this isn't needed right now, can implement later
         pass
 
     def kalman_update(self, measurement):
@@ -100,8 +101,8 @@ class FlexToFListener(Node):
         # Re-scale the measurement back
         filtered_measurement = norm_measurement * max_value
 
-        # Decay towards zero if maximum flex is small
-        decay_factor = 0.1
+        # Decay towards zero if maximum flex is small CHANGE THESE TO OPTIMIZE?
+        decay_factor = 1.0
         if max_value < 5.0:
             self.state *= (1 - decay_factor)
 

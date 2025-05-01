@@ -80,14 +80,14 @@ class FlexToFListener(Node):
         # Need to check what measurements look like, ensure as expected
         self.z = measurement
         # Initial update and covariance
-        self.x_p = self.A * self.x
-        self.P_p = self.A * self.P * self.A.transpose() + self.Q
+        self.x_p = np.matmul(self.A, self.x)
+        self.P_p = np.matmul(np.matmul(self.A, self.P), self.A.transpose()) + self.Q
 
         # Compute Kalman Gain
-        self.K = self.P * self.H.transpose() * np.linalg.inv(self.H * self.P * self.H.transpose() + self.R)
+        self.K = np.matmul(np.matmul(self.P, self.H.transpose()), np.linalg.inv(np.matmul(np.matmul(self.H, self.P), self.H.transpose()) + self.R))
         
-        self.x = self.x_p + self.K * (self.z - self.H * self.x_p)
-        self.P = self.P_p - self.K * self.H * self.P_p
+        self.x = self.x_p + np.matmul(self.K, (self.z - np.matmul(self.H, self.x_p)))
+        self.P = self.P_p - np.matmul(np.matmul(self.K, self.H), self.P_p)
 
 
 def main():

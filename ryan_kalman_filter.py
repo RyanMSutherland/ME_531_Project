@@ -28,6 +28,8 @@ class FlexToFListener(Node):
             callback_group=self.cbgroup
         )
 
+        self.data_publisher = self.create_publisher(Float32MultiArray, '/kalman_data', 10)
+
         self.get_logger().info('FlexToFListener node has been started.')
 
         # Kalman Filter Initialization
@@ -36,25 +38,28 @@ class FlexToFListener(Node):
         self.z = np.zeros((m, 1)) #[x, y] - measurements
         self.x = np.zeros((n, 1)) # Output estimate of state variables
         #self.R = np.ones((m, m)) # Measurement covariance matrix - Input
-        self.R = np.eye(m)
+        self.R = np.eye(m) *0.05
         self.P = np.ones((n, n)) # Estimate covariance matrix
         #self.H = np.ones((m, n)) # State to measurement matrix - System Model
         self.H = np.eye(n)
-        self.A = np.ones((n, n)) # State transition matrix - system model
+        # self.A = np.ones((n, n)) # State transition matrix - system model
+        self.A = np.eye(n)
         #self.Q = np.ones((n, n)) # Process noise covariance matrix - system model
-        self.Q = np.eye(n)
+        self.Q = np.eye(n) * 0.05
 
     def flex_callback(self, msg: Float32MultiArray):
         values = list(msg.data)  # Convert array('f', [...]) to a regular Python list
         print(f"[Flex Sensor Data] Values: {['{:.2f}'.format(v) for v in values]}")
         
         # Create a measurement vector that corresponds to changes in position.
-        measurement = np.array([values[0], values[1], values[2], values[3]])  # [x1, y1, x2, y2]
-
+        measurement = np.matrix([values[0], values[1], values[2], values[3]]).transpose() # [x1, y1, x2, y2]
         # Perform the Kalman Filter update
         self.kalman_update(measurement)
 
         print(f'Predicted values: {self.x}')
+        msg = Float32MultiArray()
+        msg.data = self.x
+        self.data_publisher.publish(msg)
 
         # Use the state estimate (position) to determine the apple's position
         # apple_position_x = self.x[0]
@@ -95,10 +100,6 @@ class FlexToFListener(Node):
         
         self.x = self.x_p + np.dot(self.K, (self.z - np.dot(self.H, self.x_p)))
         self.P = self.P_p - np.dot(np.dot(self.K, self.H), self.P_p)
-
-        print(f'x_p - {self.x_p}')
-        print(f'K - {self.K}')
-        print(f'x')
 
 
 def main():

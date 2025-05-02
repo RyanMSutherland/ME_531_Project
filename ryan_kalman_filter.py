@@ -54,7 +54,7 @@ class FlexToFListener(Node):
         # Perform the Kalman Filter update
         self.kalman_update(measurement)
 
-        print(f'Predicted values: {self.x[0]}, {self.x[1]}, {self.x[2]}, {self.x[3]}')
+        print(f'Predicted values: {self.x}')
 
         # Use the state estimate (position) to determine the apple's position
         # apple_position_x = self.x[0]
@@ -85,6 +85,8 @@ class FlexToFListener(Node):
         # Need to check what measurements look like, ensure as expected
         self.z = measurement
         # Initial update and covariance
+
+        #[nx1] = [nxn][nx1]
         self.x_p = np.dot(self.A, self.x)
         self.P_p = np.dot(np.dot(self.A, self.P), self.A.transpose()) + self.Q
 
@@ -95,6 +97,8 @@ class FlexToFListener(Node):
         self.P = self.P_p - np.dot(np.dot(self.K, self.H), self.P_p)
 
         print(f'x_p - {self.x_p}')
+        print(f'K - {self.K}')
+        print(f'x')
 
 
 def main():

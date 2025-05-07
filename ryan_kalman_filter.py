@@ -33,15 +33,19 @@ class FlexToFListener(Node):
         self.get_logger().info('FlexToFListener node has been started.')
 
         # Kalman Filter Initialization
-        n = 4 # Number of outputs/state variables
+        n = 2 # Number of outputs/state variables
         m = 4 # Number of input measurements
         self.z = np.zeros((m, 1)) #[x, y] - measurements
         self.x = np.zeros((n, 1)) # Output estimate of state variables
         #self.R = np.ones((m, m)) # Measurement covariance matrix - Input
-        self.R = np.eye(m) *0.05
+        self.R = np.eye(m) * 0.05
         self.P = np.ones((n, n)) # Estimate covariance matrix
-        #self.H = np.ones((m, n)) # State to measurement matrix - System Model
-        self.H = np.eye(n)
+        self.H = np.zeros((m, n)) # State to measurement matrix - System Model
+        self.H[0, 0] = 1
+        self.H[1, 1] = 1
+        self.H[2, 0] = -1
+        self.H[3, 1] = -1 
+        # self.H = np.eye(n)
         # self.A = np.ones((n, n)) # State transition matrix - system model
         self.A = np.eye(n)
         #self.Q = np.ones((n, n)) # Process noise covariance matrix - system model

@@ -6,9 +6,10 @@ from std_msgs.msg import Float32MultiArray, Int32
 import numpy as np
 
 class FlexToFListener(Node):
-    def __init__(self):
+    def __init__(self, calibrate = True):
         super().__init__('flex_tof_listener')
         self.cbgroup = ReentrantCallbackGroup()
+        self.calibrate = calibrate
 
         # Subscribe to flex sensor data
         self.flex_subscriber = self.create_subscription(
@@ -33,8 +34,8 @@ class FlexToFListener(Node):
         self.get_logger().info('FlexToFListener node has been started.')
 
         # Kalman Filter Initialization
-        n = 2 # Number of outputs/state variables
-        m = 4 # Number of input measurements
+        n = 3 # Number of outputs/state variables
+        m = 5 # Number of input measurements
         self.z = np.zeros((m, 1)) #[x, y] - measurements
         self.x = np.zeros((n, 1)) # Output estimate of state variables
         #self.R = np.ones((m, m)) # Measurement covariance matrix - Input
@@ -45,11 +46,16 @@ class FlexToFListener(Node):
         self.H[1, 1] = 1
         self.H[2, 0] = -1
         self.H[3, 1] = -1 
+        self.H[4, 2] = 1
         # self.H = np.eye(n)
         # self.A = np.ones((n, n)) # State transition matrix - system model
         self.A = np.eye(n)
         #self.Q = np.ones((n, n)) # Process noise covariance matrix - system model
         self.Q = np.eye(n) * 0.05
+
+        if self.calibrate:
+            self.all_data = np.zeros([1, m])
+            print(f'Init: {self.all_data}')
 
     def flex_callback(self, msg: Float32MultiArray):
         values = list(msg.data)  # Convert array('f', [...]) to a regular Python list
@@ -57,6 +63,21 @@ class FlexToFListener(Node):
         
         # Create a measurement vector that corresponds to changes in position.
         measurement = np.matrix([values[0], values[1], values[2], values[3]]).transpose() # [x1, y1, x2, y2]
+        
+        if self.calibrate:
+            # Add new measurement to array
+            self.all_data.append(measurement)
+
+            #Current data just removes the first row that was needed to initialize the matrix
+            current_data = self.all_data[1:]
+            np.savetxt("Calibration_data.csv", current_data, delimiter=",", fmt="%f")
+
+            average_values = np.mean(current_data, axis = 0)
+            normalized_matrix = current_data - average_values
+            sigma = (1/(len(current_data) - 1)) * np.transpose(normalized_matrix) * normalized_matrix
+
+            print(f'Predicted covariance matrix: {sigma}')
+
         # Perform the Kalman Filter update
         self.kalman_update(measurement)
 

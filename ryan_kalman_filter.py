@@ -4,6 +4,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from std_msgs.msg import Float32MultiArray, Int32
 import numpy as np
+import pandas as pd
 
 class FlexToFListener(Node):
     def __init__(self, calibrate = True):
@@ -54,7 +55,7 @@ class FlexToFListener(Node):
         self.Q = np.eye(n) * 0.05
 
         if self.calibrate:
-            self.all_data = np.zeros([1, m])
+            self.all_data = np.zeros([1, 4]) # 4 needs to be changed to m -- test
             print(f'Init: {self.all_data}')
 
     def flex_callback(self, msg: Float32MultiArray):
@@ -66,20 +67,21 @@ class FlexToFListener(Node):
         
         if self.calibrate:
             # Add new measurement to array
-            self.all_data.append(measurement)
+            mes = np.array([values[0], values[1], values[2], values[3]])
+            self.all_data = np.append(self.all_data, [mes], axis = 0)
 
             #Current data just removes the first row that was needed to initialize the matrix
             current_data = self.all_data[1:]
-            np.savetxt("Calibration_data.csv", current_data, delimiter=",", fmt="%f")
+        
+            df = pd.DataFrame(current_data)
+            df.to_csv("Calibration_data.csv")
 
-            average_values = np.mean(current_data, axis = 0)
-            normalized_matrix = current_data - average_values
-            sigma = (1/(len(current_data) - 1)) * np.transpose(normalized_matrix) * normalized_matrix
+            sigma = np.cov(current_data.T)
 
             print(f'Predicted covariance matrix: {sigma}')
 
         # Perform the Kalman Filter update
-        self.kalman_update(measurement)
+        # self.kalman_update(measurement)
 
         print(f'Predicted values: {self.x}')
         msg = Float32MultiArray()

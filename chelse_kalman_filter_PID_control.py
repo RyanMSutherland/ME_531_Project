@@ -1,282 +1,239 @@
-#!/usr/bin/env python3
-# To run code open terminal 
-# cd ros2_ws
-# source /opt/ros/humble/setup.bash
-# colcon build
-# source install/setup.bash
-# ros2 run ME531_project_chelse simple_node
-
-
 import rclpy
 from rclpy.node import Node
-from rosbag2_py import SequentialReader, StorageOptions, ConverterOptions
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import ReentrantCallbackGroup
+from std_msgs.msg import Float32MultiArray, Int32
 import numpy as np
-import struct
+import rosbag2_py
+from rclpy.serialization import deserialize_message
 import matplotlib.pyplot as plt
-from matplotlib.patches import RegularPolygon, FancyArrow
-import matplotlib
 
-# Use non-interactive backend for easier stepping
-matplotlib.use("TkAgg")  # Or use "Qt5Agg" if you prefer
 
-noise_threshold = 2
-max_flex_val = 60
+playbagfile = True
+bag_path = '/home/chelse/ros2_ws/src/ME531_project_chelse/ME531_project_chelse/flex_data/flex_data/flex_data.db3'
 
-class PIDController:
-    def __init__(self, kp=1.0, ki=0.0, kd=0.0):
-        self.kp = kp
-        self.ki = ki
-        self.kd = kd
-        self.prev_error = 0.0
-        self.integral = 0.0
-
-    def update(self, error, dt):
-        self.integral += error * dt
-        derivative = (error - self.prev_error) / dt if dt > 0 else 0.0
-        output = self.kp * error + self.ki * self.integral + self.kd * derivative
-        self.prev_error = error
-        return output
-
-class BagPlotter(Node):
+class Me531Project(Node):
     def __init__(self):
-        super().__init__('bag_plotter')
+        super().__init__('me531_project')
 
-        bag_path = '/home/chelse/ros2_ws/src/ME531_project_chelse/ME531_project_chelse/flex_data/flex_data/flex_data.db3'
-        self.flex_data, self.flex_timestamps = self.load_flex_data(bag_path)
+        self.x_history = []
+        self.y_history = []
+        self.distance_history = []
+        self.direction_history = []
+        self.raw_flex_history = []    # Store raw flex readings
+        self.filtered_flex_history = []  # Store filtered flex readings (Kalman state)
 
-        # Remove index 0 from each message
-        self.flex_data = [data[1:] for data in self.flex_data if len(data) >= 4]
+        # Add matplotlib figure and axis placeholders
+        self.fig = None
+        self.ax = None
 
-        self.flex_array = np.array(self.flex_data)
-        self.time_array = np.array(self.flex_timestamps)
+        if playbagfile: 
+            self.bag_path = bag_path
+        else:
+            self.cbgroup = ReentrantCallbackGroup()
+            # Subscribe to flex sensor data
+            self.flex_subscriber = self.create_subscription(
+                Float32MultiArray,
+                '/flex_sensor_data',
+                self.flex_callback,
+                10,
+                callback_group=self.cbgroup
+            )
 
-        self.get_logger().info(f'Loaded {len(self.flex_array)} flex messages.')
-        self.filtered_array = self.apply_kalman_filter(self.flex_array)
+            # Subscribe to ToF sensor data
+            self.tof_subscriber = self.create_subscription(
+                Int32,
+                '/tof_sensor_data',
+                self.tof_callback,
+                10,
+                callback_group=self.cbgroup
+            )
 
-        # Initialize one PID per sensor
-        self.pids = [PIDController(kp=1.0) for _ in range(4)]
+            self.data_publisher = self.create_publisher(Float32MultiArray, '/kalman_data', 10)
+            self.get_logger().info('FlexToFListener node has been started.')
 
-        self.run_pid_direction_display()
+        # Kalman Filter Initialization
+        n = 4 # Number of outputs/state variables
+        m = 4 # Number of input measurements
+        self.z = np.zeros((m, 1)) #[x, y] - measurements
+        self.x = np.zeros((n, 1)) # Output estimate of state variables
+        #self.R = np.ones((m, m)) # Measurement covariance matrix - Input
+        self.R = np.eye(m) *0.05
+        self.P = np.ones((n, n)) # Estimate covariance matrix
+        #self.H = np.ones((m, n)) # State to measurement matrix - System Model
+        self.H = np.eye(n)
+        # self.A = np.ones((n, n)) # State transition matrix - system model
+        self.A = np.eye(n)
+        #self.Q = np.ones((n, n)) # Process noise covariance matrix - system model
+        self.Q = np.eye(n) * 0.05
+
+    def kalman_update(self, measurement):
+        # Need to check what measurements look like, ensure as expected
+        self.z = measurement
+        # Initial update and covariance
+
+        #[nx1] = [nxn][nx1]
+        self.x_p = np.dot(self.A, self.x)
+        self.P_p = np.dot(np.dot(self.A, self.P), self.A.T) + self.Q
+
+        # Compute Kalman Gain
+        self.K = np.dot(np.dot(self.P, self.H.transpose()), np.linalg.inv(np.dot(np.dot(self.H, self.P), self.H.transpose()) + self.R))
         
-        #self.plot_data()  # Only one plot now
+        self.x = self.x_p + np.dot(self.K, (self.z - np.dot(self.H, self.x_p)))
+        self.P = self.P_p - np.dot(np.dot(self.K, self.H), self.P_p)
 
-    def deserialize_float32multiarray(self, serialized_bytes):
-        data = serialized_bytes[4:]  # skip CDR header
-        dim_count = int.from_bytes(data[0:4], 'little')
-        offset = 4 + dim_count * 12 + 4  # layout and offset
-        float_count = (len(data) - offset) // 4
-        return list(struct.unpack('<' + 'f' * float_count, data[offset:]))
+    def process_flex_data(self, values):
+        measurement = np.array(values).reshape((4, 1))
+        self.kalman_update(measurement)
 
-    def load_flex_data(self, bag_path):
-        storage_options = StorageOptions(uri=bag_path, storage_id='sqlite3')
-        converter_options = ConverterOptions(input_serialization_format='cdr', output_serialization_format='cdr')
+        # Save positions for plotting
+        self.x_history.append(float(self.x[0]))
+        self.y_history.append(float(self.x[1]))
 
-        reader = SequentialReader()
+        # Use the state estimate (position) to determine the apple's position
+        apple_position_x = float(self.x[0])
+        apple_position_y = float(self.x[1])
+
+        # Calculate direction and distance to origin (0, 0)
+        dx = -apple_position_x
+        dy = -apple_position_y
+        distance = np.sqrt(dx**2 + dy**2)
+
+        # Determine cardinal direction
+        angle_rad = np.arctan2(dy, dx)
+        angle_deg = (np.degrees(angle_rad) + 360) % 360
+
+        direction = self.get_direction_from_angle(angle_deg)
+
+        print(f"[Kalman Position] x = {apple_position_x:.2f}, y = {apple_position_y:.2f}")
+        print(f"➡ Move {direction} by {distance:.2f} units\n")
+
+        # Update the matplotlib figure with the new info
+        self.update_info_figure(raw_values=values,
+                                filtered_values=self.x.flatten().tolist(),
+                                gripper_x=apple_position_x,
+                                gripper_y=apple_position_y,
+                                direction=direction,
+                                distance=distance)
+
+        if not playbagfile:
+            msg = Float32MultiArray()
+            msg.data = self.x.flatten().tolist()
+            self.data_publisher.publish(msg)
+
+    def get_direction_from_angle(self, angle_deg):
+        # Define sectors for cardinal directions (8-way)
+        directions = [
+            ("East", 0),
+            ("Northeast", 45),
+            ("North", 90),
+            ("Northwest", 135),
+            ("West", 180),
+            ("Southwest", 225),
+            ("South", 270),
+            ("Southeast", 315)
+        ]
+        for i in range(len(directions)):
+            name, center = directions[i]
+            start = (center - 22.5) % 360
+            end = (center + 22.5) % 360
+            if start < end:
+                if start <= angle_deg < end:
+                    return name
+            else:  # wrap around 0 degrees
+                if angle_deg >= start or angle_deg < end:
+                    return name
+        return "Unknown"
+
+
+    def read_bag_and_process(self):
+        self.get_logger().info(f"Opening bag file: {self.bag_path}")
+        reader = rosbag2_py.SequentialReader()
+        storage_options = rosbag2_py.StorageOptions(uri=self.bag_path, storage_id='sqlite3')
+        converter_options = rosbag2_py.ConverterOptions('', '')
         reader.open(storage_options, converter_options)
 
-        flex_data = []
-        timestamps = []
+        topic_types = reader.get_all_topics_and_types()
+        topic_type_dict = {topic.name: topic.type for topic in topic_types}
+        flex_topic = '/flex_sensor_data'
 
-        while reader.has_next():
-            topic, data, timestamp = reader.read_next()
-            if topic == '/flex_sensor_data':
-                array = self.deserialize_float32multiarray(data)
-                flex_data.append(array)
-                timestamps.append(timestamp * 1e-9)  # convert ns to seconds
-
-        # Normalize time (start at 0)
-        if timestamps:
-            t0 = timestamps[0]
-            timestamps = [t - t0 for t in timestamps]
-
-        return flex_data, timestamps
-
-    def apply_kalman_filter(self, data_array):
-        """
-        Applies a multi-dimensional Kalman filter to the sensor data.
-        Each row of data_array is a measurement vector.
-        """
-        n_samples, n_sensors = data_array.shape
-
-        # Kalman filter matrices (copied from FlexToFListener)
-        n = n_sensors
-        m = n_sensors
-        A = np.eye(n)
-        H = np.eye(m)
-        Q = np.eye(n) * 0.05
-        R = np.eye(m) * 0.05
-        P = np.ones((n, n))
-        x = np.zeros((n, 1))
-
-        filtered = np.zeros_like(data_array)
-
-        for t in range(n_samples):
-            z = data_array[t, :].reshape((m, 1))  # Measurement vector
-
-            # Predict
-            x_p = A @ x
-            P_p = A @ P @ A.T + Q
-
-            # Kalman Gain
-            K = P_p @ H.T @ np.linalg.inv(H @ P_p @ H.T + R)
-
-            # Update
-            x = x_p + K @ (z - H @ x_p)
-            P = P_p - K @ H @ P_p
-
-            filtered[t, :] = x.flatten()
-
-        return filtered
-
-    def direction_from_flex(self, active):
-        # Map combinations to directions
-        combinations = {
-            (1, 0, 0, 0): 'South',
-            (0, 1, 0, 0): 'West',
-            (0, 0, 1, 0): 'North',
-            (0, 0, 0, 1): 'East',
-            (1, 1, 0, 0): 'Southwest',
-            (0, 1, 1, 0): 'Northwest',
-            (0, 0, 1, 1): 'Northeast',
-            (1, 0, 0, 1): 'Southeast',
-            (1, 1, 1, 0): 'West',
-            (1, 1, 0, 1): 'South',
-            (0, 1, 1, 1): 'North',
-            (1, 0, 1, 1): 'East',
-            (1, 1, 1, 1): 'STOP'
-        }
-        key = tuple(int(a > noise_threshold) for a in active)
-        return combinations.get(key, 'Unknown')
-
-    def plot_direction(self, direction, raw_vals, filtered_vals, timestep):
-        fig, (ax_dir, ax_data) = plt.subplots(1, 2, figsize=(10, 5))
-        fig.suptitle(f"Time {self.time_array[timestep]:.2f}s - Direction: {direction}", fontsize=14)
-
-        # --- Direction plot ---
-        ax_dir.set_xlim(-1.5, 1.5)
-        ax_dir.set_ylim(-1.5, 1.5)
-        ax_dir.axis('off')
-
-        speed = 0  # Default
-
-        if direction == 'STOP':
-            hexagon = RegularPolygon((0, 0), numVertices=6, radius=1, color='red')
-            ax_dir.add_patch(hexagon)
-            ax_dir.text(0, 0, 'STOP', color='white', fontsize=20, ha='center', va='center')
-        elif direction != 'Unknown':
-            direction_vectors = {
-                'North': (0, 1),
-                'South': (0, -1),
-                'East': (1, 0),
-                'West': (-1, 0),
-                'Northeast': (1, 1),
-                'Northwest': (-1, 1),
-                'Southeast': (1, -1),
-                'Southwest': (-1, -1)
-            }
-
-            dx_raw, dy_raw = direction_vectors.get(direction, (0, 0))
-
-            # Determine active sensors above noise threshold
-            active_flex = [val for val in raw_vals if val > noise_threshold]
-
-            if len(active_flex) == 1:
-                speed = int(active_flex[0] // 10)
-            elif len(active_flex) > 1:
-                avg_flex = sum(active_flex) / len(active_flex)
-                speed = int(avg_flex // 10)
-
-            # Arrow length is now 0.5 × speed for better visibility
-            arrow_len = 0.5 * speed
-
-            # Normalize direction vector and scale to arrow_len
-            norm = np.hypot(dx_raw, dy_raw)
-            if norm == 0 or speed == 0:
-                dx, dy = 0, 0
-            else:
-                dx = dx_raw / norm * arrow_len
-                dy = dy_raw / norm * arrow_len
-
-            arrow = FancyArrow(0, 0, dx, dy, width=0.1, length_includes_head=True, color='blue')
-            ax_dir.add_patch(arrow)
-
-            # Show speed *under the title*, above the origin
-            ax_dir.text(0, 1.2, f"Speed: {speed:.0f} cm/s", ha='center', va='bottom', fontsize=12, color='black')
-
-        ax_dir.set_title("Direction")
-
-        # --- Sensor value subplot ---
-        sensor_indices = np.arange(1, 5)
-
-        ax_data.plot(sensor_indices, raw_vals, 'o', color='orange', label='Raw')
-        ax_data.plot(sensor_indices, filtered_vals, 's', color='blue', label='Filtered')
-
-        ax_data.set_xticks(sensor_indices)
-        ax_data.set_xticklabels([f"Sensor {i}" for i in sensor_indices])
-        ax_data.set_ylabel("Sensor Reading")
-        ax_data.set_ylim(0, max(max(raw_vals), max(filtered_vals)) + 5)
-        ax_data.legend()
-        ax_data.grid(True)
-        ax_data.set_title("Flex Sensor Readings")
-
-        plt.tight_layout()
-        plt.pause(0.01)
-        input("Press Enter to continue...")
-        plt.close()
-
-
-    def run_pid_direction_display(self):
-        print("Running PID + Direction display...")
-
-        for i in range(1, len(self.filtered_array)):
-            dt = self.time_array[i] - self.time_array[i - 1]
-
-            pid_outputs = []
-            for j in range(4):
-                error = self.filtered_array[i, j]  # desired = 0, so error = value
-                control = self.pids[j].update(error, dt)
-                pid_outputs.append(control)
-
-            if i <= 20:
-                print(f"Time {self.time_array[i]:.2f}s - PID outputs: {pid_outputs}")
-
-            direction = self.direction_from_flex(pid_outputs)
-
-            raw_vals = self.flex_array[i, :]
-            filtered_vals = self.filtered_array[i, :]
-
-            self.plot_direction(direction, raw_vals, filtered_vals, i)
-
-        plt.close()
-
-
-
-    '''
-    def plot_data(self):
-        if self.flex_array.size == 0:
-            self.get_logger().warn("No flex data to plot.")
+        if topic_type_dict.get(flex_topic) != 'std_msgs/msg/Float32MultiArray':
+            self.get_logger().error(f"Unexpected topic type for {flex_topic}")
             return
 
-        plt.figure(figsize=(10, 6))
-        n_sensors = self.flex_array.shape[1]
+        while reader.has_next():
+            topic, data, _ = reader.read_next()
+            if topic == flex_topic:
+                msg = deserialize_message(data, Float32MultiArray)
+                self.process_flex_data(list(msg.data))
 
-        for i in range(n_sensors):
-            plt.plot(self.time_array, self.flex_array[:, i], linestyle=':', label=f'Raw Sensor {i + 1}')
-            plt.plot(self.time_array, self.filtered_array[:, i], linestyle='-', label=f'Filtered Sensor {i + 1}')
+        self.plot_positions()
 
-        plt.xlabel('Time (s)')
-        plt.ylabel('Sensor Value')
-        plt.title('Flex Sensor Readings (Raw and Filtered)')
+
+    def flex_callback(self, msg: Float32MultiArray):
+        self.process_flex_data(list(msg.data))
+
+    def tof_callback(self, msg: Int32):
+        # Placeholder: implement this if needed later
+        pass
+
+    def update_info_figure(self, raw_values, filtered_values, gripper_x, gripper_y, direction, distance):
+        # Create figure and axis on first call
+        if self.fig is None or self.ax is None:
+            self.fig, self.ax = plt.subplots(figsize=(6, 4))
+            plt.ion()  # interactive mode on
+            self.fig.show()
+
+        self.ax.clear()
+
+        # Compose text to display
+        text = (
+            f"Raw values: {np.array2string(np.array(raw_values), precision=3, separator=', ')}\n"
+            f"Filtered values: {np.array2string(np.array(filtered_values), precision=3, separator=', ')}\n"
+            f"Gripper x position: {gripper_x:.3f}\n"
+            f"Gripper y position: {gripper_y:.3f}\n"
+            f"------------------------------\n"
+            f"Direction to move: {direction}\n"
+            f"Distance to move: {distance:.3f}"
+        )
+
+        self.ax.text(0.1, 0.5, text, fontsize=12, family='monospace', va='center', ha='left')
+        self.ax.axis('off')  # hide axes
+
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
+
+    def plot_positions(self):
+        plt.figure(figsize=(8, 6))
+        plt.plot(self.x_history, label='x position')
+        plt.plot(self.y_history, label='y position')
+        plt.xlabel('Time step')
+        plt.ylabel('Position')
+        plt.title('Kalman-Filtered x and y Positions Over Time')
         plt.legend()
         plt.grid(True)
         plt.tight_layout()
-        plt.show()
-    '''
+        plt.show(block=False)  # show plot but don't block
+
+        print("Press spacebar or enter to close the plot...")
+        plt.waitforbuttonpress()  # wait for key press (True if key pressed, False if mouse click)
+        plt.close()  # close plot window after key press
+
+
 
 def main(args=None):
     rclpy.init(args=args)
-    node = BagPlotter()
-    rclpy.shutdown()
+    try:
+        node = Me531Project()
+        if playbagfile:
+            node.read_bag_and_process()
+        else:
+            # your ROS subscriber spin code here
+            executor = MultiThreadedExecutor()
+            executor.add_node(node)
+            executor.spin()
+    finally:
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

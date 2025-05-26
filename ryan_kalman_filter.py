@@ -97,6 +97,7 @@ class FlexToFListener(Node):
         self.pid_controller(self.x)
 
         print(f'Predicted values: {self.x}')
+        print(f'Current values: {self.current_x}, {self.current_y}')
         msg = Float32MultiArray()
         msg.data = self.x
         self.data_publisher.publish(msg)

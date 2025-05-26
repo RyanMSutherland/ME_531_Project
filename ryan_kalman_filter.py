@@ -31,12 +31,13 @@ class FlexToFListener(Node):
         )
 
         self.data_publisher = self.create_publisher(Float32MultiArray, '/kalman_data', 10)
+        self.position_publisher = self.create_publisher(Float32MultiArray, '/position_data', 10)
 
         self.get_logger().info('FlexToFListener node has been started.')
 
         # Kalman Filter Initialization
-        n = 3 # Number of outputs/state variables
-        m = 5 # Number of input measurements
+        n = 2 # Number of outputs/state variables
+        m = 4 # Number of input measurements
         self.z = np.zeros((m, 1)) #[x, y] - measurements
         self.x = np.zeros((n, 1)) # Output estimate of state variables
         #self.R = np.ones((m, m)) # Measurement covariance matrix - Input
@@ -47,12 +48,21 @@ class FlexToFListener(Node):
         self.H[1, 1] = 1
         self.H[2, 0] = -1
         self.H[3, 1] = -1 
-        self.H[4, 2] = 1
+        # self.H[4, 2] = 1
         # self.H = np.eye(n)
         # self.A = np.ones((n, n)) # State transition matrix - system model
         self.A = np.eye(n)
         #self.Q = np.ones((n, n)) # Process noise covariance matrix - system model
         self.Q = np.eye(n) * 0.05
+
+        self.current_x, self.current_y = 0, 0
+        self.current_x_vel, self.current_y_vel = 0, 0
+        self.K_p = 1
+        self.K_i = 0
+        self.K_d = 0
+        self.dt = 0.05 #Find real frequency
+        self.prev_x_error, self.prev_y_error = 0, 0
+        self.max_vel = 2
 
         if self.calibrate:
             self.all_data = np.zeros([1, 4]) # 4 needs to be changed to m -- test
@@ -81,32 +91,16 @@ class FlexToFListener(Node):
             print(f'Predicted covariance matrix: {sigma}')
 
         # Perform the Kalman Filter update
-        # self.kalman_update(measurement)
+        self.kalman_update(measurement)
+
+        # PID controller
+        self.pid_controller(self.x)
 
         print(f'Predicted values: {self.x}')
         msg = Float32MultiArray()
         msg.data = self.x
         self.data_publisher.publish(msg)
 
-        # Use the state estimate (position) to determine the apple's position
-        # apple_position_x = self.x[0]
-        # apple_position_y = self.x[1]
-
-        # if apple_position_y > 1.0:
-        #     vertical_position = "Up"
-        # elif apple_position_y < -1.0:
-        #     vertical_position = "Down"
-        # else:
-        #     vertical_position = ""
-
-        # if apple_position_x > 1.0:
-        #     horizontal_position = "Right"
-        # elif apple_position_x < -1.0:
-        #     horizontal_position = "Left"
-        # else:
-        #     horizontal_position = ""
-        
-        # print(f"Apple Position: {vertical_position} {horizontal_position} ({apple_position_x:.2f}, {apple_position_y:.2f})")
 
     def tof_callback(self, msg: Int32):
         # print(f"[ToF Sensor Data] Distance: {msg.data} mm")
@@ -127,6 +121,32 @@ class FlexToFListener(Node):
         
         self.x = self.x_p + np.dot(self.K, (self.z - np.dot(self.H, self.x_p)))
         self.P = self.P_p - np.dot(np.dot(self.K, self.H), self.P_p)
+
+    def pid_controller(self, predicted_location):
+        error_x = predicted_location[0] - self.current_x
+        error_y = predicted_location[1] - self.current_y
+
+        derivative_x = (error_x - self.prev_x_error)/self.dt
+        self.current_x_vel = self.K_p * error_x + self.K_d * derivative_x
+
+        if abs(self.current_x_vel) > self.vel_max:
+            if self.current_x_vel > 0:
+                self.current_x_vel = self.vel_max
+            else:
+                self.current_x_vel = -self.vel_max
+
+        derivative_y = (error_y - self.prev_y_error)/self.dt
+        self.current_y_vel = self.K_p * error_y + self.K_d * derivative_y
+
+        if abs(self.current_y_vel) > self.vel_max:
+            if self.current_y_vel > 0:
+                self.current_y_vel = self.vel_max
+            else:
+                self.current_y_vel = -self.vel_max
+
+        self.current_x += self.current_x_vel * self.dt
+        self.current_y += self.current_y_vel * self.dt
+
 
 
 def main():

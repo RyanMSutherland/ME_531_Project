@@ -58,7 +58,7 @@ class Me531Project(Node):
         self.z = np.zeros((m, 1)) #[x, y] - measurements
         self.x = np.zeros((n, 1)) # Output estimate of state variables
         #self.R = np.ones((m, m)) # Measurement covariance matrix - Input
-        self.R = np.eye(m) *0.05
+        self.R = np.eye(m) * 0.05
         self.P = np.ones((n, n)) # Estimate covariance matrix
         #self.H = np.ones((m, n)) # State to measurement matrix - System Model
         self.H = np.eye(n)

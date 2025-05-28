@@ -62,7 +62,7 @@ class FlexToFListener(Node):
         self.K_d = 0
         self.dt = 0.05 #Find real frequency
         self.prev_x_error, self.prev_y_error = 0, 0
-        self.max_vel = 2
+        self.vel_max = 2
 
         if self.calibrate:
             self.all_data = np.zeros([1, 4]) # 4 needs to be changed to m -- test

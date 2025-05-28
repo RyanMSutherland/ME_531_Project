@@ -3,6 +3,7 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from std_msgs.msg import Float32MultiArray, Int32
+from geometry msgs.msg import TransformStamped
 import numpy as np
 import pandas as pd
 
@@ -30,8 +31,10 @@ class FlexToFListener(Node):
             callback_group=self.cbgroup
         )
 
-        self.data_publisher = self.create_publisher(Float32MultiArray, '/kalman_data', 10)
-        self.position_publisher = self.create_publisher(Float32MultiArray, '/position_data', 10)
+        self.data_publisher_x = self.create_publisher(TransformStamped, '/x_position_apple', 10)
+        self.data_publisher_y = self.create_publisher(TransformStamped, '/y_position_apple', 10)
+        self.position_publisher_x = self.create_publisher(TransformStamped, '/x_position_gripper', 10)
+        self.position_publisher_x = self.create_publisher(TransformStamped, '/y_position_gripper', 10)
 
         self.get_logger().info('FlexToFListener node has been started.')
 
@@ -98,9 +101,27 @@ class FlexToFListener(Node):
 
         print(f'Predicted values: {self.x}')
         print(f'Current values: {self.current_x}, {self.current_y}')
-        msg = Float32MultiArray()
-        msg.data = self.x
+        now = self.get_clock().now()
+
+        msg = TransformStamped()
+        msg.header.stamp = now.to_msg()
+        msg.transform.translation.x = self.x[0]
         self.data_publisher.publish(msg)
+
+        msg = TransformStamped()
+        msg.header.stamp = now.to_msg()
+        msg.transform.translation.y = self.x[1]
+        self.data_publisher.publish(msg)
+
+        msg = TransformStamped()
+        msg.header.stamp = now.to_msg()
+        msg.transform.translation.x = self.current_x
+        self.position_publisher_x.publish(msg)
+
+        msg = TransformStamped()
+        msg.header.stamp = now.to_msg()
+        msg.transform.translation.y = self.current_y
+        self.position_publisher_y.publish(msg)
 
 
     def tof_callback(self, msg: Int32):
@@ -147,8 +168,6 @@ class FlexToFListener(Node):
 
         self.current_x += self.current_x_vel * self.dt
         self.current_y += self.current_y_vel * self.dt
-
-
 
 def main():
     rclpy.init()

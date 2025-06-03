@@ -3,12 +3,12 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from std_msgs.msg import Float32MultiArray, Int32
-from geometry msgs.msg import TransformStamped
+from geometry_msgs.msg import TransformStamped
 import numpy as np
 import pandas as pd
 
 class FlexToFListener(Node):
-    def __init__(self, calibrate = True):
+    def __init__(self, calibrate = False):
         super().__init__('flex_tof_listener')
         self.cbgroup = ReentrantCallbackGroup()
         self.calibrate = calibrate
@@ -34,7 +34,7 @@ class FlexToFListener(Node):
         self.data_publisher_x = self.create_publisher(TransformStamped, '/x_position_apple', 10)
         self.data_publisher_y = self.create_publisher(TransformStamped, '/y_position_apple', 10)
         self.position_publisher_x = self.create_publisher(TransformStamped, '/x_position_gripper', 10)
-        self.position_publisher_x = self.create_publisher(TransformStamped, '/y_position_gripper', 10)
+        self.position_publisher_y = self.create_publisher(TransformStamped, '/y_position_gripper', 10)
 
         self.get_logger().info('FlexToFListener node has been started.')
 
@@ -60,12 +60,15 @@ class FlexToFListener(Node):
 
         self.current_x, self.current_y = 0, 0
         self.current_x_vel, self.current_y_vel = 0, 0
+        self.current_x_acc, self.current_y_acc = 0, 0
         self.K_p = 1
         self.K_i = 0
-        self.K_d = 0
-        self.dt = 0.05 #Find real frequency
+        self.K_d = 0.5
+        self.dt = 0.01 #Find real frequency
         self.prev_x_error, self.prev_y_error = 0, 0
+        self.acc_max = 30
         self.vel_max = 2
+        self.scale = 4 # scale down apple positions to match real world
 
         if self.calibrate:
             self.all_data = np.zeros([1, 4]) # 4 needs to be changed to m -- test
@@ -76,7 +79,7 @@ class FlexToFListener(Node):
         print(f"[Flex Sensor Data] Values: {['{:.2f}'.format(v) for v in values]}")
         
         # Create a measurement vector that corresponds to changes in position.
-        measurement = np.matrix([values[0], values[1], values[2], values[3]]).transpose() # [x1, y1, x2, y2]
+        measurement = np.matrix([values[0]/self.scale, values[1]/self.scale, values[2]/self.scale, values[3]/self.scale]).transpose() # [x1, y1, x2, y2]
         
         if self.calibrate:
             # Add new measurement to array
@@ -105,22 +108,25 @@ class FlexToFListener(Node):
 
         msg = TransformStamped()
         msg.header.stamp = now.to_msg()
-        msg.transform.translation.x = self.x[0]
-        self.data_publisher.publish(msg)
+        msg.transform.translation.x = float(self.x[1])
+        self.data_publisher_x.publish(msg)
 
+        now = self.get_clock().now()
         msg = TransformStamped()
         msg.header.stamp = now.to_msg()
-        msg.transform.translation.y = self.x[1]
-        self.data_publisher.publish(msg)
+        msg.transform.translation.y = float(self.x[0])
+        self.data_publisher_y.publish(msg)
 
+        now = self.get_clock().now()
         msg = TransformStamped()
         msg.header.stamp = now.to_msg()
-        msg.transform.translation.x = self.current_x
+        msg.transform.translation.x = float(self.current_y)
         self.position_publisher_x.publish(msg)
 
+        now = self.get_clock().now()
         msg = TransformStamped()
         msg.header.stamp = now.to_msg()
-        msg.transform.translation.y = self.current_y
+        msg.transform.translation.y = float(self.current_x)
         self.position_publisher_y.publish(msg)
 
 
@@ -145,29 +151,94 @@ class FlexToFListener(Node):
         self.P = self.P_p - np.dot(np.dot(self.K, self.H), self.P_p)
 
     def pid_controller(self, predicted_location):
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if not hasattr(self, 'prev_time'):
+            self.prev_time = now
+            self.integral_x = 0
+            self.integral_y = 0
+
+        dt = now - self.prev_time
+        self.prev_time = now
+
+        error_x = predicted_location[0] - self.current_x
+        error_y = predicted_location[1] - self.current_y
+
+        # Integral
+        self.integral_x += error_x * dt
+        self.integral_y += error_y * dt
+
+        # Derivative
+        derivative_x = (error_x - self.prev_x_error) / dt if dt > 0 else 0
+        derivative_y = (error_y - self.prev_y_error) / dt if dt > 0 else 0
+
+        # PID output (acceleration)
+        self.current_x_acc = self.K_p * error_x + self.K_i * self.integral_x + self.K_d * derivative_x
+        self.current_y_acc = self.K_p * error_y + self.K_i * self.integral_y + self.K_d * derivative_y
+
+        # Limit acceleration
+        self.current_x_acc = np.clip(self.current_x_acc, -self.acc_max, self.acc_max)
+        self.current_y_acc = np.clip(self.current_y_acc, -self.acc_max, self.acc_max)
+
+        # Update velocity
+        self.current_x_vel += self.current_x_acc * dt
+        self.current_y_vel += self.current_y_acc * dt
+
+        # Limit velocity
+        self.current_x_vel = np.clip(self.current_x_vel, -self.vel_max, self.vel_max)
+        self.current_y_vel = np.clip(self.current_y_vel, -self.vel_max, self.vel_max)
+
+        # Update position
+        self.current_x += self.current_x_vel * dt
+        self.current_y += self.current_y_vel * dt
+
+        # Save errors
+        self.prev_x_error = error_x
+        self.prev_y_error = error_y
+
+        print(f'error_x: {error_x}, current_x_velocity: {self.current_x_vel}, current_x_acc: {self.current_x_acc}')
+
+
         error_x = predicted_location[0] - self.current_x
         error_y = predicted_location[1] - self.current_y
 
         derivative_x = (error_x - self.prev_x_error)/self.dt
-        self.current_x_vel = self.K_p * error_x + self.K_d * derivative_x
+        self.current_x_acc = self.K_p * error_x + self.K_d * derivative_x
+
+        if abs(self.current_x_acc) > self.acc_max:
+            if self.current_x_acc > 0:
+                self.current_x_acc = self.acc_max
+            else:
+                self.current_x_acc = -self.acc_max
+
+        derivative_y = (error_y - self.prev_y_error)/self.dt
+        self.current_y_acc = self.K_p * error_y + self.K_d * derivative_y
+
+        if abs(self.current_y_acc) > self.acc_max:
+            if self.current_y_acc > 0:
+                self.current_y_acc = self.acc_max
+            else:
+                self.current_y_acc = -self.acc_max
 
         if abs(self.current_x_vel) > self.vel_max:
             if self.current_x_vel > 0:
                 self.current_x_vel = self.vel_max
             else:
                 self.current_x_vel = -self.vel_max
-
-        derivative_y = (error_y - self.prev_y_error)/self.dt
-        self.current_y_vel = self.K_p * error_y + self.K_d * derivative_y
+        self.current_x_vel += self.current_x_acc * self.dt
 
         if abs(self.current_y_vel) > self.vel_max:
             if self.current_y_vel > 0:
                 self.current_y_vel = self.vel_max
             else:
                 self.current_y_vel = -self.vel_max
+        self.current_y_vel += self.current_y_acc * self.dt
+
 
         self.current_x += self.current_x_vel * self.dt
         self.current_y += self.current_y_vel * self.dt
+        print(f'error_x: {error_x}')
+        print(f'current_x_velocity: {self.current_x_vel}')
+        print(f'current_x_acc: {self.current_x_acc}')
 
 def main():
     rclpy.init()
